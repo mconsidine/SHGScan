@@ -274,10 +274,12 @@ class SHGForm(Form):
         else:
             self.fixedSlewRate.Enabled = False
             self.recFrameRate.Text = "N/A"
+        self.CalcScanParams()
         
     def doFixedSlewRateChange(self, sender, args):
         self.FixedSlewRate = int(self.fixedSlewRate.SelectedItem.strip("x"))
         self.recFrameRate.Text = str(int(self.CalcFrameRate(self.FixedSlewRate)))
+        self.CalcScanParams()
 
     def doSlewPadChange(self, sender, args):
         try:
@@ -581,6 +583,7 @@ class SHGForm(Form):
         time.sleep((endTime - startTime)/2)
         self.stopSlew()
         self.enableGo()
+        SharpCap.ShowNotification("SHG scan completed", NotificationStatus.OK)
         
     def RestorePos(self):
         saveRate = SharpCap.Mounts.SelectedMount.SelectedRate
@@ -606,11 +609,12 @@ class SHGForm(Form):
         SharpCap.SelectedCamera.FrameCaptured -= self.measureSunFramehandler
         self.TaskAbortFlag = False
         self.enableGo()
+        SharpCap.ShowNotification("SHG scan aborted!", NotificationStatus.Error)
 
             
     # do bump slews - if mount is currently slewing, set a request, otherwise OK to do the slew ourselves
     def DoBumpL(self, sender, event):
-        # slew in RA at the bumpRate for 1 second after acquisition complete
+        # slew in bump axis at the bumpRate for 1 second after acquisition complete
         self.BumpSlew = -self.BumpRate
         if (self.BumpSwap):
             self.BumpSlew *= -1
@@ -618,7 +622,7 @@ class SHGForm(Form):
             self.DoBumpSlew()
 
     def DoBumpLFast(self, sender, event):
-        # slew in RA at bumpRate*2 for 1 second after acquisition complete
+        # slew in bump axis at bumpRate*2 for 1 second after acquisition complete
         self.BumpSlew = -2 * self.BumpRate
         if (self.BumpSwap):
             self.BumpSlew *= -1
@@ -626,7 +630,7 @@ class SHGForm(Form):
             self.DoBumpSlew()
         
     def DoBumpR(self, sender, event):
-        # slew in negative RA at bumpRate for 1 second after acquisition complete
+        # slew in negative bump axis at bumpRate for 1 second after acquisition complete
         self.BumpSlew = self.BumpRate
         if (self.BumpSwap):
             self.BumpSlew *= -1
@@ -634,7 +638,7 @@ class SHGForm(Form):
             self.DoBumpSlew()
         
     def DoBumpRFast(self, sender, event):
-        # slew in negative RA at bumpRate for 1 second after acquisition complete
+        # slew in negative bump axis at bumpRate for 1 second after acquisition complete
         self.BumpSlew = 2 * self.BumpRate
         if (self.BumpSwap):
             self.BumpSlew *= -1
@@ -722,26 +726,33 @@ class SHGForm(Form):
         cutout1 = args.Frame.CutROI(Rectangle(0, 0, ROIX, ROIY))
         cutout2 = args.Frame.CutROI(Rectangle(ROIX, ROIY, ROIX, ROIY))
         diff = cutout1.GetStats().Item1  - cutout2.GetStats().Item1  # difference between left and right halves
+        print(f"diff {diff}")
         if self.MaxFrameBright == 0:        # first comparison
             self.MaxFrameBright = diff
             self.SavePos()
-        elif diff > self.MaxFrameBright+10:     # more of a difference, either passed center, or initially down trending
+        elif abs(diff - self.MaxFrameBright) > 5:     # more of a difference, either passed center, or initially moving in the wrong direction
             if self.NeedReverse:             # passed center
                 self.CenteredSun = True
+                print("centered")
             else:
                 self.NeedReverse = True
+                print("reverse")
         else:       # more equal, continue slew
             self.MaxFrameBright = diff
             self.SavePos()
+            print("continue")
         
     def CenterSun(self):
         self.MaxFrameBright = 0
         self.CenteredSun = False
         self.NeedReverse = False
+        reversedFlag = False
         
         SharpCap.SelectedCamera.FrameCaptured += self.sunCenterFramehandler
         saveRA = SharpCap.Mounts.SelectedMount.Coordinates.RightAscension
-        
+        saveDec = SharpCap.Mounts.SelectedMount.Coordinates.Declination
+        print(f"starting coords {saveRA:.2f}, {saveDec:.2f}")
+        CENTER_RATE = 16
         # slew in bump axis only
         print("Centering")
         self.MaxFrameBright = 0
@@ -749,20 +760,21 @@ class SHGForm(Form):
         self.NeedReverse = False
         SharpCap.Mounts.SelectedMount.MoveAxis(abs(1 - self.AxisToMove), CENTER_RATE)        # center at 16x
         while not self.CenteredSun:
-            if self.NeedReverse:
+            if self.NeedReverse and not reversedFlag:
                 SharpCap.Mounts.SelectedMount.MoveAxis(abs(1 - self.AxisToMove), -CENTER_RATE)
+                reversedFlag = True
         self.stopSlew()
         saveDec = self.SavedCoords.Declination
-        print(f"centered at {self.MaxFrameBright} Dec={saveDec:.2f} found")
+        print(f"centered at {self.MaxFrameBright}, RA={saveRA:.2f}, Dec={saveDec:.2f} found")
 
         SharpCap.SelectedCamera.FrameCaptured -= self.sunCenterFramehandler
         # move to correct position
-        saveRate = SharpCap.Mounts.SelectedMount.SelectedRate
-        SharpCap.Mounts.SelectedMount.SelectedRate = Interfaces.AxisRate.ForSiderealRate(REPOSITION_RATE)
-        SharpCap.Mounts.SelectedMount.SlewTo(RADecPosition(saveRA, saveDec, Epoch.J2000))
-        SharpCap.Mounts.SelectedMount.SelectedRate = saveRate
-        while SharpCap.Mounts.SelectedMount.Slewing:
-           time.sleep(0.25)
+        # saveRate = SharpCap.Mounts.SelectedMount.SelectedRate
+        # SharpCap.Mounts.SelectedMount.SelectedRate = Interfaces.AxisRate.ForSiderealRate(REPOSITION_RATE)
+        # SharpCap.Mounts.SelectedMount.SlewTo(RADecPosition(saveRA, saveDec, Epoch.J2000))
+        # SharpCap.Mounts.SelectedMount.SelectedRate = saveRate
+        # while SharpCap.Mounts.SelectedMount.Slewing:
+           # time.sleep(0.25)
 
         
     ######################### shutdown #########################
@@ -843,9 +855,13 @@ class SHGForm(Form):
         # theoretical required slew rate is calculated assuming need as many lines as width in pixels for 1:1 aspect ratio, and one frame per line
         #   ==> sun_deg / sun_pix = deg/line, multiply by frames (aka lines) per second to obtain required deg/sec
         #   then divide by solar tracking rate of 1/240 deg/sec, which should theoretically result in 120*fps / sunPixWidth
-        self.SlewFactor = -(self.FrameRate * 120) / self.SunWidth
-        cycle_duration = self.SlewPad * 2 + (self.SunWidth/self.FrameRate)
-        self.FPSInfo.Text = f"{self.FrameRate:.2f} fps => {abs(self.SlewFactor):.2f}x solar => est cycle duration: {cycle_duration:.2f} sec"
+        if self.IsFixedSlewRate:
+            cycle_duration = self.SlewPad * 2 + (self.SunWidth/int(self.recFrameRate.Text))
+            self.FPSInfo.Text = f"{self.recFrameRate.Text} fps => {abs(self.FixedSlewRate):.2f}x solar => est cycle duration: {cycle_duration:.2f} sec"
+        else:
+            self.SlewFactor = -(self.FrameRate * 120) / self.SunWidth
+            cycle_duration = self.SlewPad * 2 + (self.SunWidth/self.FrameRate)
+            self.FPSInfo.Text = f"{self.FrameRate:.2f} fps => {abs(self.SlewFactor):.2f}x solar => est cycle duration: {cycle_duration:.2f} sec"
         return True
 # end class definition
         
